@@ -1,11 +1,10 @@
 /*
  * pod serializer requirements:
- * - allocate memory when needed;
- * - named blocks with pod types defined by user; 
+ * - named blocks with pod types defined by user;
+ * - varibale header length 
  */ 
 
 // g++ -Wall -Wextra `pkg-config --cflags glib-2.0` test.cpp -o test `pkg-config --libs glib-2.0`
-
 
 #include <cstring>
 #include <cstdlib>
@@ -26,14 +25,14 @@ class serializer
 /*  
  *                        block structure
  * 
- *    |_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|_|0|_|_|_|_|_|_|_|_|
+ *    |_|_|_|_|0|_|_|_|_|_|_|_|_|_|_|_|_|_|_|0|_|_|_|_|_|_|_|_|
  *    | dev_id  |  len  |       |             |               |
  *    | cstring | size_t|  int  |   cstring   |     float     |
  *    |s i g n a t u r e|          b l o c k   b o d y        |
  *
  *    serializer used to accumulate messages as blocks
- *    each block finalized on sign_block() call with dev_id
- *    of predefined length, which has to be the same on the other end.   
+ *    each block started with sign_block() with dev_id of variable length, 
+ *    and finalized with finalize()   
  */
 
 private:
@@ -41,8 +40,6 @@ private:
   int    message_len_;
   /* dynamically allocated buffer */
   char*  buf_;
-  /* true if no messages being signed */
-  bool   head_;
     
   /* current position */
   char*  pos_;
@@ -55,7 +52,7 @@ private:
   size_t size_;
 
   /* length of dev_id header */
-  const int hlen_;
+  int hlen_;
     
   bool out_of_mem()
   {
@@ -81,28 +78,6 @@ private:
     return true;
   }
   
-  bool realloc(size_t sizein)
-  {
-    /* plain realloc  */
-    size_ = sizein;
-    char* buf_new;
-    buf_new = (char*)malloc(size_);
-    if(!buf_new)
-    {
-      malloc_failed_stderr(__func__, errno);
-      return false;
-    }
-    free(buf_);
-    buf_ = buf_new;
-      
-    memset(buf_, 0x00, size_);                                     
-    pos_       = buf_ + hlen_ + sizeof(block_len_); 
-    beg_       = buf_;
-    block_len_ = 0;
-    head_      = true;     
-    std::cout << "realloc: " << size_ << std::endl;
-    return true;
-  }
   
   void malloc_failed_stderr(const char* func, int err)
   {
@@ -111,11 +86,11 @@ private:
     fwrite(buf, 1, strlen(buf), stderr);
   }
 
+  
 public:
-  /* header_len [0 ... 64] - header length */ 
-  serializer(size_t header_len): 
-  size_(1024),
-  hlen_(header_len > 64 ? 64 : header_len)
+  serializer(size_t size): 
+  size_(size),
+  hlen_(0)
   {  
     buf_  = (char*)malloc(size_);
     if(!buf_)
@@ -125,10 +100,9 @@ public:
     }
     memset(buf_, 0x00, size_);
     message_len_ = 0;
-    pos_         = buf_ + hlen_ + sizeof(block_len_); 
+    pos_         = buf_ + hlen_; 
     beg_         = buf_;
     block_len_   = 0;
-    head_        = true;
   }
   
   ~serializer() { free(buf_); }
@@ -141,8 +115,8 @@ public:
   /* copy data to serializer */
   void buffer_update(const char* bufin, size_t sizein)
   {
-    if(size_ <= sizein)
-    { realloc(sizein); }
+    while(size_ <= sizein)
+    { out_of_mem(); }
     memcpy(buf_, bufin, sizein);
     message_len_ = (int)sizein;
   }
@@ -156,47 +130,61 @@ public:
   
   void reset()
   {
-    pos_       = buf_ + hlen_ + sizeof(block_len_); 
+    hlen_      = 0;
+    pos_       = buf_ + hlen_; 
     beg_       = buf_;
     block_len_ = 0;
-    head_      = true;
   }
   
-  /* 
-   * called when device serialization is done
-   * id has to be a cstring, will be truncated to hlen too long.. 
-   */
+  /* called prior to device serialization */ 
   void sign_block(const char* id)
+  {
+    if(!id)
+    {
+      hlen_ = 1;
+      *beg_ = 0x00;
+      while(pos_ - buf_ + hlen_ + sizeof(hlen_) >= size_)
+      { out_of_mem(); }
+    }
+    else
+    {
+      hlen_ = strlen(id) + 1;
+      while(pos_ - buf_ + hlen_ + sizeof(hlen_) >= size_)
+      { out_of_mem(); }
+      memcpy(beg_, id, hlen_);
+      *(beg_ + hlen_) = 0x00;
+    }
+    
+    pos_ += hlen_ + sizeof(hlen_);
+  }
+  
+  /* called when device serializati on is done */
+  void finalize_block()
   {
     block_len_ = (pos_ - beg_) - hlen_ - sizeof(block_len_);
     message_len_ += (pos_ - beg_);
-    
-    if(id && strlen(id) > 0)
-    { memcpy(beg_, id, hlen_); }
-    else
-    { if(hlen_ > 0) { memset(beg_, ' ', hlen_); } }
-    
     memcpy(beg_ + hlen_, &block_len_, sizeof(block_len_));
     beg_ = pos_;
-    if(size_ - (pos_ - buf_) <= (hlen_ + sizeof(block_len_)))
-    { out_of_mem(); }
-    pos_ += hlen_ + sizeof(block_len_);
   }
+  
+  
   
   /* read block one by one while the end is not reached */
   bool read_block(char* id)
-  {
+  {    
+    strcpy(id, pos_);
+    hlen_ = strlen(id);
+    
+    while(pos_ - buf_ + hlen_ + sizeof(hlen_) >= size_)
+    { out_of_mem(); }
+    
     if(message_len_ <= pos_ - beg_)
     { return false; }
-    if(!head_)
-    { beg_ += block_len_ + hlen_ + sizeof(block_len_); }
-    
-    if(0x00 == *beg_) { return false; }
-    pos_ = beg_ + hlen_ + sizeof(block_len_);
-    memcpy(id, beg_, hlen_);
-    memcpy(&block_len_, beg_ + hlen_, sizeof(block_len_));
-    head_ = false;
-    
+        
+    pos_ = beg_ + hlen_ + sizeof(hlen_) + 1;
+    memcpy(&block_len_, beg_ + hlen_ + 1, sizeof(block_len_));
+    beg_ += block_len_ + hlen_ + sizeof(block_len_) + 1; 
+
     return true;
   }
   
