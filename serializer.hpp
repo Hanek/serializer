@@ -1,7 +1,7 @@
 /*
  * pod serializer requirements:
  * - named blocks with pod types defined by user;
- * - varibale header length 
+ * - varibale header length; 
  */ 
 
 // g++ -Wall -Wextra `pkg-config --cflags glib-2.0` test.cpp -o test `pkg-config --libs glib-2.0`

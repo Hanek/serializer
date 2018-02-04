@@ -9,7 +9,7 @@
 #include <glib.h>
 
 #include "serializer.hpp"
-
+  
 
 void linear_serializer_test()
 { 
@@ -22,8 +22,6 @@ void linear_serializer_test()
   
   for(int i = 0; i < n; i++)
   {
-//     sprintf(p, "variable length header: #%d",i);
-//     for(int j = 0; j < i; j++) { strcat(p, "__"); }
     sprintf(str, "cstring: #%d", i<<2);
     is.sign_block(p);
     is.serialize<int>(4096 + i);
